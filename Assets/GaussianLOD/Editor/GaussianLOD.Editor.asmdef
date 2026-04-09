@@ -1,0 +1,22 @@
+{
+    "name": "GaussianLOD.Editor",
+    "rootNamespace": "GaussianLOD.EditorTools",
+    "references": [
+        "GaussianLOD.Runtime",
+        "GaussianSplatting",
+        "Unity.Collections",
+        "Unity.Mathematics",
+        "Unity.Burst"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": true,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

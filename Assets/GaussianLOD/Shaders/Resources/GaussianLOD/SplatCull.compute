@@ -1,0 +1,81 @@
+// SPDX-License-Identifier: MIT
+// SplatCull.compute — frustum cull and screen-coverage estimation kernels for the
+// GaussianLOD pipeline. Operates on a StructuredBuffer<SplatClusterData> whose layout
+// must match the C# SplatClusterData struct EXACTLY (see Runtime/Clustering/SplatClusterData.cs).
+
+#pragma kernel CSFrustumCull
+#pragma kernel CSCoverageEstimate
+
+// Must mirror C# SplatClusterData layout (68 bytes).
+struct SplatClusterData
+{
+    int   startIndex;
+    int   count;
+    float3 boundsCenter;   // UnityEngine.Bounds.center
+    float3 boundsExtents;  // UnityEngine.Bounds.extents
+    int   lodLevel;
+    float3 megaSplatPosition;
+    float4 megaSplatColor;
+    float megaSplatScale;
+};
+
+StructuredBuffer<SplatClusterData> _Clusters;
+RWStructuredBuffer<uint>           _VisibleMask;
+RWStructuredBuffer<float>          _Coverage;
+float4                             _FrustumPlanes[6];
+float3                             _CameraPosition;
+uint                               _ClusterCount;
+
+// ---- Frustum cull ----
+[numthreads(64,1,1)]
+void CSFrustumCull(uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    if (i >= _ClusterCount)
+        return;
+
+    SplatClusterData c = _Clusters[i];
+    float3 center = c.boundsCenter;
+    float3 ext    = c.boundsExtents;
+
+    uint visible = 1;
+    [unroll]
+    for (int p = 0; p < 6; ++p)
+    {
+        float4 plane = _FrustumPlanes[p];
+        float3 n = plane.xyz;
+        float d = plane.w;
+        float r = ext.x * abs(n.x) + ext.y * abs(n.y) + ext.z * abs(n.z);
+        float s = dot(n, center) + d;
+        if (s + r < 0.0)
+        {
+            visible = 0;
+            break; // early-out on first failing plane
+        }
+    }
+
+    _VisibleMask[i] = visible;
+}
+
+// ---- Screen coverage ----
+// Solid-angle approximation: coverage ≈ clusterRadius² / distanceToCenter².
+// Only writes to clusters whose visible-mask bit is set.
+[numthreads(64,1,1)]
+void CSCoverageEstimate(uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    if (i >= _ClusterCount)
+        return;
+
+    if (_VisibleMask[i] == 0)
+    {
+        _Coverage[i] = 0.0;
+        return;
+    }
+
+    SplatClusterData c = _Clusters[i];
+    float3 toCam = c.boundsCenter - _CameraPosition;
+    float distSq = max(0.0001, dot(toCam, toCam));
+    float radius = length(c.boundsExtents);
+    _Coverage[i] = (radius * radius) / distSq;
+}

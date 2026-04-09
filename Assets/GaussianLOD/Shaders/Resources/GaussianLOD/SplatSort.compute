@@ -1,0 +1,78 @@
+// SPDX-License-Identifier: MIT
+// SplatSort.compute — bitonic sort over a contiguous subrange of an index buffer,
+// sorted descending by the matching key buffer (back-to-front depth order).
+//
+// Two-phase bitonic sort: outer loop k = 2,4,8,...,N (subsequence size), inner loop
+// j = k/2,k/4,...,1 (compare distance). Each (k,j) is a single dispatch from the
+// host. The kernel only touches indices in [_SortRangeStart, _SortRangeStart + _SortRangeCount).
+// Out-of-range slots are treated as virtual +∞ for comparison so non-power-of-two
+// counts work correctly without modifying the buffer outside the range.
+//
+// Threadgroup size is selected at compile time via SORT_METAL (32) or SORT_VULKAN (64),
+// set by PlatformCapabilityChecker on startup.
+
+#pragma kernel CSBitonicSort
+#pragma multi_compile SORT_METAL SORT_VULKAN
+
+#ifdef SORT_METAL
+    #define SORT_TG 32
+#else
+    #define SORT_TG 64
+#endif
+
+RWStructuredBuffer<uint> _SortIndices; // splat indices (the values we move)
+RWStructuredBuffer<uint> _SortKeys;    // distance keys (sortable as uint via float→sortable-uint encoding upstream)
+
+uint _SortRangeStart;
+uint _SortRangeCount;
+uint _SortK;       // outer subsequence size
+uint _SortJ;       // inner compare distance
+uint _SortDescending; // 1 = descending (back-to-front), 0 = ascending
+
+uint VirtualKey(uint localIndex)
+{
+    // Out-of-range elements behave as the worst-case key for the requested order
+    // so they sink to the end of the sorted region without us having to write to them.
+    if (localIndex >= _SortRangeCount)
+        return _SortDescending != 0 ? 0u : 0xFFFFFFFFu;
+    return _SortKeys[_SortRangeStart + localIndex];
+}
+
+[numthreads(SORT_TG,1,1)]
+void CSBitonicSort(uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    if (i >= _SortRangeCount)
+        return;
+
+    uint partner = i ^ _SortJ;
+    if (partner <= i)
+        return; // each pair handled by the lower-index thread
+
+    // ascending or descending depends on which "block" of size k we're in
+    bool ascendingBlock = ((i & _SortK) == 0u);
+    if (_SortDescending != 0u)
+        ascendingBlock = !ascendingBlock;
+
+    uint keyA = VirtualKey(i);
+    uint keyB = VirtualKey(partner);
+
+    bool swap = ascendingBlock ? (keyA > keyB) : (keyA < keyB);
+    if (!swap)
+        return;
+
+    // Both indices must be inside the real range to actually swap.
+    if (i >= _SortRangeCount || partner >= _SortRangeCount)
+        return;
+
+    uint absA = _SortRangeStart + i;
+    uint absB = _SortRangeStart + partner;
+
+    uint tmpKey = _SortKeys[absA];
+    _SortKeys[absA] = _SortKeys[absB];
+    _SortKeys[absB] = tmpKey;
+
+    uint tmpIdx = _SortIndices[absA];
+    _SortIndices[absA] = _SortIndices[absB];
+    _SortIndices[absB] = tmpIdx;
+}

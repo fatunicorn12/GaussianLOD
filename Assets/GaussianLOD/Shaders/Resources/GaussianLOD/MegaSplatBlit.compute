@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: MIT
+// MegaSplatBlit.compute — for each cluster currently at LOD3, write the cluster's
+// representative mega-splat (position, color, scale) into a flat _OutputSplats buffer
+// at the cluster's startIndex. In the LOD-bucketed runtime architecture this kernel
+// is invoked Editor-side by the SplatClusterBaker to author the LOD3 child asset's
+// raw splat data; it is not on the per-frame runtime hot path. See ARCHITECTURE.md §2b.
+
+#pragma kernel CSMegaSplatBlit
+
+struct SplatClusterData
+{
+    int    startIndex;
+    int    count;
+    float3 boundsCenter;
+    float3 boundsExtents;
+    int    lodLevel;
+    float3 megaSplatPosition;
+    float4 megaSplatColor;
+    float  megaSplatScale;
+};
+
+// Mega-splat output layout — matches the structure expected by the bake-side
+// asset writer. Fields are deliberately minimal: position (12B), color (16B),
+// scale (4B). The bake step packs these into Aras's compressed asset format.
+struct MegaSplat
+{
+    float3 position;
+    float4 color;
+    float  scale;
+};
+
+StructuredBuffer<SplatClusterData> _Clusters;
+StructuredBuffer<int>              _LodLevels;
+RWStructuredBuffer<MegaSplat>      _OutputSplats;
+uint                               _ClusterCount;
+
+[numthreads(64,1,1)]
+void CSMegaSplatBlit(uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    if (i >= _ClusterCount) return;
+    if (_LodLevels[i] != 3) return;
+
+    SplatClusterData c = _Clusters[i];
+
+    MegaSplat ms;
+    ms.position = c.megaSplatPosition;
+    ms.color    = c.megaSplatColor;
+    ms.scale    = c.megaSplatScale;
+
+    _OutputSplats[c.startIndex] = ms;
+}

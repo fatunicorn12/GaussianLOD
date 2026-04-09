@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: MIT
+// SplatLODSelect.compute — assigns a per-cluster LOD level based on screen-coverage
+// thresholds. Only processes visible clusters (_VisibleMask[i] != 0). The CPU
+// LODSelector mirrors this exactly so the two paths are interchangeable.
+
+#pragma kernel CSLODSelect
+
+StructuredBuffer<uint>  _VisibleMask;
+StructuredBuffer<float> _Coverage;
+RWStructuredBuffer<int> _LodLevels;
+
+float _Lod0Threshold;
+float _Lod1Threshold;
+float _Lod2Threshold;
+uint  _ClusterCount;
+
+[numthreads(64,1,1)]
+void CSLODSelect(uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    if (i >= _ClusterCount) return;
+
+    if (_VisibleMask[i] == 0)
+    {
+        _LodLevels[i] = 3; // mega-only / culled
+        return;
+    }
+
+    float c = _Coverage[i];
+    int lod;
+    if (c > _Lod0Threshold)      lod = 0;
+    else if (c > _Lod1Threshold) lod = 1;
+    else if (c > _Lod2Threshold) lod = 2;
+    else                          lod = 3;
+    _LodLevels[i] = lod;
+}

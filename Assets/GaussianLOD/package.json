@@ -1,0 +1,26 @@
+{
+  "name": "com.willb.gaussianlod",
+  "version": "0.1.0",
+  "displayName": "Gaussian Splat Clustered LOD",
+  "description": "Production-grade clustered LOD, frustum culling, screen-coverage budgeting, and stereo-aware draw orchestration for Aras Pranckevicius's Gaussian Splatting Unity package. Targets Apple Vision Pro (Metal), Meta Quest 3S (Vulkan), and PC dev via ALVR/SteamVR.",
+  "unity": "6000.0",
+  "author": {
+    "name": "Will B"
+  },
+  "dependencies": {
+    "com.unity.burst": "1.8.8",
+    "com.unity.collections": "2.1.4",
+    "com.unity.mathematics": "1.2.6",
+    "com.unity.render-pipelines.universal": "17.0.0",
+    "com.unity.xr.management": "4.4.0"
+  },
+  "keywords": [
+    "gaussian-splatting",
+    "lod",
+    "vr",
+    "xr",
+    "visionpro",
+    "quest",
+    "urp"
+  ]
+}

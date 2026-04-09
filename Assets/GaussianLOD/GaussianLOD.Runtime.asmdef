@@ -1,0 +1,38 @@
+{
+    "name": "GaussianLOD.Runtime",
+    "rootNamespace": "GaussianLOD.Runtime",
+    "references": [
+        "GaussianSplatting",
+        "Unity.XR.Management",
+        "Unity.Collections",
+        "Unity.Mathematics",
+        "Unity.Burst",
+        "Unity.RenderPipelines.Universal.Runtime",
+        "Unity.RenderPipelines.Core.Runtime"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": true,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [],
+    "versionDefines": [
+        {
+            "name": "com.unity.render-pipelines.universal",
+            "expression": "",
+            "define": "GLOD_ENABLE_URP"
+        },
+        {
+            "name": "com.unity.xr.management",
+            "expression": "",
+            "define": "GLOD_ENABLE_XR"
+        },
+        {
+            "name": "com.unity.xr.openxr",
+            "expression": "",
+            "define": "GLOD_ENABLE_OPENXR"
+        }
+    ],
+    "noEngineReferences": false
+}
