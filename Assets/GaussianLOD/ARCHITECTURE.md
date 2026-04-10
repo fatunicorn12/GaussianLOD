@@ -300,3 +300,53 @@ All non-`Util` runtime classes implement `IDisposable`. `GaussianLODController.O
 - A5. `Resources/` folder loading for compute shaders is acceptable. (We will create `Assets/GaussianLOD/Shaders/Resources/` and load via `Resources.Load<ComputeShader>("GaussianLOD/SplatCull")`, etc., or use a `Resources.Load` path. Alternative: serialize compute shader references on `GaussianLODController`. The spec asks for both — `ComputeShaderCache` loads from Resources AND `GaussianLODController` has serialized refs. We will resolve by having `GaussianLODController` pass its serialized refs *into* `ComputeShaderCache.Initialize(...)` so the cache holds them, and `Resources` is the fallback path. Documented here.)
 - A6. The 9000-cluster ceiling assumption: at depth 8 with 1024-splat min leaves, a 5M-splat asset cannot exceed ~5000 leaves; depth-8 max-fanout is 8^8 = 16M but actual leaf count is bounded by `splatCount / minLeafSize ≈ 4883`. We'll size pool buffers at 16384 to be safe.
 - A7. Bitonic sort range: we will pad `_SortRangeCount` up to next power of two virtually inside the shader (out-of-range elements compared as +∞ so they sink to the end of the sorted region), but we will NOT touch indices outside `[start, start+count)` in the output buffer. The shader keeps a scratch range and writes back only `count` elements.
+
+---
+
+## 7. Multi-Asset Spatial Zone System (Phase 13)
+
+### Problem
+Large PLY scenes (10–50M splats) exceed practical single-asset limits. Scene-wide bucket switching means one distant cluster can force the entire asset to LOD0. Spatial splitting — dividing the scene into independently LOD-managed zones — solves both issues.
+
+### Architecture
+
+```
+SpatialZoneManager (MonoBehaviour, orchestrator)
+        │ serialized: GaussianLODController[] zones
+        │
+        ├──► ZoneBudgetSplitter (budget math)
+        │       Takes total platform budget → splits proportionally by per-zone screen coverage
+        │       Zones with 0 visible clusters → 0 budget
+        │       Minimum kMinBudgetPerZone = 5,000 per active zone
+        │
+        └──► GaussianLODController × N (each zone independent)
+                 │ Each owns its own: LODSelector, LODBudgetManager,
+                 │ LODTransitionController, SplatDrawCallAssembler
+                 │
+                 └──► StereoCameraRig.Instance (shared singleton)
+                         Ref-counted via GetOrCreate / Release
+                         Multiple controllers share one XR camera query per frame
+```
+
+### Key design decisions
+
+**SpatialZoneManager** is a pure orchestrator. It does NOT contain any LOD logic — it collects per-zone coverage from each controller's `LODSelector`, feeds them to `ZoneBudgetSplitter`, and writes the resulting per-zone budget into each controller's `LODBudgetManager.MaxSplatsPerFrame` before enforcement.
+
+**ZoneBudgetSplitter** is a pure math class. It receives a total budget integer and an array of per-zone coverages, outputs per-zone budget allocations. No platform awareness, no Unity APIs. Budget distribution: reserve `kMinBudgetPerZone` per active zone, distribute the remainder proportionally by coverage, assign rounding residual to the highest-coverage zone.
+
+**StereoCameraRig** gains a static singleton (`Instance`) with ref-counted lifecycle (`GetOrCreate` / `Release`). Multiple `GaussianLODController` instances in a multi-zone scene share one rig to avoid redundant XR API queries. The single-controller case still works identically — `GetOrCreate` creates the singleton on first call. Constructor remains public for backward compatibility.
+
+**Single-controller backward compat**: If no `SpatialZoneManager` is present, each `GaussianLODController` runs independently using its own `splatsPerFrameOverride` or the platform default. No behavioral change from v1.
+
+### Offline workflow: PLY splitting
+
+`Tools/split_ply.py` is a standalone Python script (numpy-only) that spatially partitions a source PLY into grid cells. Each output PLY preserves all source properties. Overlap regions duplicate splats to prevent seams. Zones below `--min-splats` are merged into their nearest neighbor. This runs before the Unity bake pipeline — the user imports each output PLY into Unity, bakes each via `SplatClusterBaker`, then wires each as a zone in `SpatialZoneManager`.
+
+### Updated dependency graph (multi-zone path)
+
+```
+SpatialZoneManager
+    ├── ZoneBudgetSplitter
+    └── GaussianLODController[] ──► (same per-zone graph as §4)
+            └── StereoCameraRig.Instance (shared)
+```

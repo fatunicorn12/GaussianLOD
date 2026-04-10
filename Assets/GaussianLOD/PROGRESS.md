@@ -1,20 +1,10 @@
 # GaussianLOD — Progress
 
-**Status:** ✅ Complete. All 12 phases done.
+**Status:** ✅ Complete. All 14 phases done.
 
 ## Error Triage (post-readonly-fix compile pass)
 
-All 22 errors are caller-side; runtime definitions are correct.
-
-| Error | File (wrong side) | Fix |
-|---|---|---|
-| CS1612 ×2: modify return value of `LodLevels` | LODSelectionTests.cs | Copy `sel.LodLevels` into a local `var` first; NativeArray indexer mutates underlying memory through the copy |
-| CS1654 ×7: modify `using` variable | LODSelectionTests.cs | Drop `using var levels = …`; use try/finally with manual `Dispose()` |
-| CS1061 ×4: `AllIndices` missing | GaussianLODValidator.cs | Real property name is `allIndices` (lowercase) |
-| CS7036/CS1501/CS1503/CS1061 ×5: wrong DecodePositions/Build signatures | SplatClusterBaker.cs | Rewrite Bake() to match real API: `Build(GaussianSplatAsset, bool)` decodes internally; re-decode positions separately for `MegaSplatGenerator` |
-| CS1503 ×2: SetBakedData arg order | SplatClusterBaker.cs | Real order is `(clusters, indexAsset, int totalSplatCount, int maxDepth, Bounds sceneBounds)` |
-| CS1061 ×2: `LastFrameRequestedSplats` / `SplatsPerFrameBudget` missing | LODBudgetProfiler.cs | Real names: `LastFrameSplatCost` / `MaxSplatsPerFrame` |
-
+All 22 compile errors identified during the initial pass have been **fixed and verified**. The four affected files (`LODSelectionTests.cs`, `GaussianLODValidator.cs`, `SplatClusterBaker.cs`, `LODBudgetProfiler.cs`) now match their runtime APIs and compile cleanly.
 
 ## Summary
 - 4 asmdefs / package.json
@@ -22,12 +12,14 @@ All 22 errors are caller-side; runtime definitions are correct.
 - 5 Clustering classes
 - 3 Culling classes
 - 3 LOD classes
-- 2 Stereo classes
+- 2 Stereo classes (StereoCameraRig now with static singleton)
 - 3 Rendering classes
 - 1 boundary MonoBehaviour (`GaussianLODController`)
+- 2 Zone classes (`SpatialZoneManager`, `ZoneBudgetSplitter`)
 - 4 compute shaders
-- 3 editor tools (Baker, Profiler overlay, Validator)
-- 3 test files
+- 4 editor tools (Baker, Profiler overlay, Validator, ZoneSetupValidator)
+- 4 test files (Clustering, Culling, LODSelection, Zones)
+- 1 Python tool (`Tools/split_ply.py` + `requirements.txt`)
 - ARCHITECTURE.md, SETUP.md, TASKS.md, PROGRESS.md
 
 ## Architectural decisions logged
@@ -37,7 +29,12 @@ All 22 errors are caller-side; runtime definitions are correct.
 - **MegaSplat color**: `Color.white` placeholder — Aras uses real per-splat colors at draw time, so megasplat color is informational only.
 - **Allocator**: `StereoFrustumMerger.GetMergedPlanes()` returns `Allocator.TempJob` (not `Temp`) so the caller can dispose safely.
 - **Future v2**: `InternalsVisibleTo` from Aras's asmdef would unlock per-cluster indirect draws and remove the scene-wide LOD limitation. Out of scope.
+- **Zone budget splitting**: `ZoneBudgetSplitter` is pure math — receives total budget + per-zone coverage, outputs per-zone allocations. Min 5,000 splats per active zone.
+- **StereoCameraRig singleton**: Ref-counted via `GetOrCreate`/`Release`. Multi-zone scenes share one XR camera query per frame. Single-controller case unchanged.
+- **SpatialZoneManager**: Pure orchestrator — no LOD logic. Collects coverage, distributes budget, lets each zone's controller run independently.
+- **PLY splitting**: Offline Python tool (`Tools/split_ply.py`). numpy-only. Supports overlap regions, min-splat merging, binary + ASCII PLY.
 
 ## Known limitations
-- Scene-wide LOD switching, not per-cluster. Documented prominently in SETUP.md §4.
+- Scene-wide LOD switching per zone, not per-cluster. Documented prominently in SETUP.md §4.
 - LOD1..LOD3 buckets initially point at the source asset. Real GPU savings require user-authored decimated assets.
+- `SpatialZoneManager.LateUpdate` runs in same phase as each zone's controller — execution order between them is undefined by Unity. Budget override is applied after the initial selector pass. In practice this means the first frame after a budget change may be slightly off.

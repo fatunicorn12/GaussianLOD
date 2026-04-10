@@ -71,3 +71,17 @@ All phases complete.
 - [x] `SETUP.md`
 - [x] Final TASKS.md / PROGRESS.md sweep
 - [x] Final folder tree output
+
+## Phase 13 — Multi-Asset Spatial Zone Support
+- [x] `Runtime/Zones/ZoneBudgetSplitter.cs`
+- [x] `Runtime/Zones/SpatialZoneManager.cs`
+- [x] Modify `Runtime/Stereo/StereoCameraRig.cs` — add static singleton
+- [x] Modify `Runtime/GaussianLODController.cs` — use shared StereoCameraRig.Instance
+- [x] Modify `Editor/LODBudgetProfiler.cs` — multi-zone overlay view
+- [x] `Editor/ZoneSetupValidator.cs`
+- [x] `Tests/ZoneTests.cs`
+- [x] Update ARCHITECTURE.md with zone system design
+
+## Phase 14 — Python PLY Spatial Splitter
+- [x] `Tools/split_ply.py`
+- [x] `Tools/requirements.txt`

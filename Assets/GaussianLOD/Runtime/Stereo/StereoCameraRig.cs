@@ -23,6 +23,51 @@ namespace GaussianLOD.Runtime.Stereo
             public Matrix4x4 projectionMatrix;
         }
 
+        // ---- Singleton for multi-zone sharing ------------------------------------------------
+        static StereoCameraRig s_Instance;
+        static int s_RefCount;
+
+        /// <summary>
+        /// Shared singleton instance. Null until the first controller creates one via
+        /// <see cref="GetOrCreate"/>. Multiple GaussianLODControllers in a multi-zone
+        /// scene share this single instance to avoid redundant XR API queries.
+        /// </summary>
+        public static StereoCameraRig Instance => s_Instance;
+
+        /// <summary>
+        /// Return the existing singleton if it targets the same camera, otherwise create a
+        /// new one. Each caller must pair this with <see cref="Release"/> on dispose.
+        /// </summary>
+        public static StereoCameraRig GetOrCreate(Camera cam)
+        {
+            if (s_Instance != null && s_Instance.m_Camera == cam)
+            {
+                s_RefCount++;
+                return s_Instance;
+            }
+
+            // First caller or different camera — create fresh.
+            var rig = new StereoCameraRig(cam);
+            s_Instance = rig;
+            s_RefCount = 1;
+            return rig;
+        }
+
+        /// <summary>
+        /// Decrement the ref count. When it reaches zero the singleton is cleared.
+        /// </summary>
+        public static void Release(StereoCameraRig rig)
+        {
+            if (rig == null || rig != s_Instance) return;
+            s_RefCount--;
+            if (s_RefCount <= 0)
+            {
+                s_Instance = null;
+                s_RefCount = 0;
+            }
+        }
+
+        // ---- Instance members ----------------------------------------------------------------
         public EyePose Left { get; private set; }
         public EyePose Right { get; private set; }
         public EyePose Center { get; private set; }

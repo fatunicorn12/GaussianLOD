@@ -107,7 +107,8 @@ namespace GaussianLOD.Runtime
                 m_Pool.ClusterMetadataBuffer.SetData(clusterAsset.clusters);
 
                 // 4. Stereo + culling stack (GPU path companions).
-                m_Rig = new StereoCameraRig(targetCamera);
+                // Use shared singleton so multi-zone scenes share one StereoCameraRig.
+                m_Rig = StereoCameraRig.GetOrCreate(targetCamera);
                 m_Merger = new StereoFrustumMerger(m_Rig);
                 m_CullResult = new CullingResultBuffer(m_Pool);
                 m_Culler = new FrustumCuller(m_Pool, m_CullResult);
@@ -183,6 +184,7 @@ namespace GaussianLOD.Runtime
             m_Culler?.Dispose(); m_Culler = null;
             m_CullResult?.Dispose(); m_CullResult = null;
             m_Merger?.Dispose(); m_Merger = null;
+            StereoCameraRig.Release(m_Rig);
             m_Rig?.Dispose(); m_Rig = null;
             m_Pool?.Dispose(); m_Pool = null;
             ComputeShaderCache.Dispose();

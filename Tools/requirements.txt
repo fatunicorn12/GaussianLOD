@@ -1,0 +1,2 @@
+numpy
+tqdm  # optional — progress bars; script works without it
