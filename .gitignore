@@ -22,3 +22,7 @@ MemoryCaptures/
 # OS
 .DS_Store
 Thumbs.db
+
+# PLY output zones
+Tools/test_zones/
+*.ply
