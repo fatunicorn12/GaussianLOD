@@ -16,6 +16,7 @@ namespace GaussianLOD.Runtime.Clustering
     ///   int startIndex, int count, float3 boundsCenter, float3 boundsExtents,
     ///   int lodLevel, float3 megaSplatPosition, float4 megaSplatColor, float megaSplatScale.
     /// </summary>
+    [System.Serializable]
     [StructLayout(LayoutKind.Sequential)]
     public struct SplatClusterData
     {

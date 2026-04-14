@@ -126,6 +126,7 @@ namespace GaussianLOD.Editor
                     child.transform.SetParent(root.transform, false);
                     var renderer = child.AddComponent<GaussianSplatRenderer>();
                     renderer.m_Asset = m_Source;
+                    AssignShaderResources(renderer);
                     child.SetActive(lod == 0);
                 }
 
@@ -146,6 +147,24 @@ namespace GaussianLOD.Editor
             AssetDatabase.Refresh();
             EditorGUIUtility.PingObject(clusterAsset);
             Debug.Log($"[GaussianLOD] Baked {r.clusters.Length} clusters → {clusterPath}");
+        }
+
+        static void AssignShaderResources(GaussianSplatRenderer renderer)
+        {
+            const string kShaders = "Packages/org.nesnausk.gaussian-splatting/Shaders/";
+
+            renderer.m_ShaderSplats      = AssetDatabase.LoadAssetAtPath<Shader>(kShaders + "RenderGaussianSplats.shader");
+            renderer.m_ShaderComposite   = AssetDatabase.LoadAssetAtPath<Shader>(kShaders + "GaussianComposite.shader");
+            renderer.m_ShaderDebugPoints = AssetDatabase.LoadAssetAtPath<Shader>(kShaders + "GaussianDebugRenderPoints.shader");
+            renderer.m_ShaderDebugBoxes  = AssetDatabase.LoadAssetAtPath<Shader>(kShaders + "GaussianDebugRenderBoxes.shader");
+            renderer.m_CSSplatUtilities  = AssetDatabase.LoadAssetAtPath<ComputeShader>(kShaders + "SplatUtilities.compute");
+
+            if (renderer.m_ShaderSplats == null || renderer.m_ShaderComposite == null ||
+                renderer.m_ShaderDebugPoints == null || renderer.m_ShaderDebugBoxes == null ||
+                renderer.m_CSSplatUtilities == null)
+                Debug.LogWarning("[GaussianLOD] One or more GaussianSplatRenderer shader resources " +
+                                 "failed to load from Packages/org.nesnausk.gaussian-splatting/Shaders/. " +
+                                 "Check that the package is installed correctly.");
         }
     }
 }
