@@ -1,17 +1,26 @@
 // SPDX-License-Identifier: MIT
-// SplatSort.compute — bitonic sort over a contiguous subrange of an index buffer,
-// sorted descending by the matching key buffer (back-to-front depth order).
+// SplatSort.compute — two kernels:
 //
-// Two-phase bitonic sort: outer loop k = 2,4,8,...,N (subsequence size), inner loop
-// j = k/2,k/4,...,1 (compare distance). Each (k,j) is a single dispatch from the
-// host. The kernel only touches indices in [_SortRangeStart, _SortRangeStart + _SortRangeCount).
-// Out-of-range slots are treated as virtual +∞ for comparison so non-power-of-two
-// counts work correctly without modifying the buffer outside the range.
+//   CSBitonicSort          (legacy, used by LODBudgetManager over cluster centers and
+//                           kept as a fallback when the fork extension API is absent)
+//   CSBuildFilteredIndices (primary path — see ARCHITECTURE.md §8.5)
 //
-// Threadgroup size is selected at compile time via SORT_METAL (32) or SORT_VULKAN (64),
-// set by PlatformCapabilityChecker on startup.
+// CSBitonicSort: two-phase bitonic sort over a contiguous subrange of an index buffer,
+// sorted descending by the matching key buffer (back-to-front depth order). Outer loop
+// k = 2,4,8,...,N, inner loop j = k/2,k/4,...,1. Each (k,j) is one dispatch. Only touches
+// indices in [_SortRangeStart, _SortRangeStart + _SortRangeCount). Out-of-range slots
+// are treated as virtual +∞ so non-power-of-two counts work without writes outside the
+// range. Threadgroup size is selected at compile time via SORT_METAL (32) or SORT_VULKAN
+// (64), set by PlatformCapabilityChecker on startup.
+//
+// CSBuildFilteredIndices: per-cluster emit into the fork's `gpuSortKeys` buffer. Each
+// thread handles one cluster; visible clusters emit `count`, `count/2`, `count/4`, or 1
+// splat indices (for LOD0, LOD1, LOD2, LOD3 respectively) into _FilteredIndices.
+// Allocation uses InterlockedAdd on _FilteredCount[0], giving cluster-grouped (not
+// strictly back-to-front) output. Fixed 64-thread group; independent of SORT_TG.
 
 #pragma kernel CSBitonicSort
+#pragma kernel CSBuildFilteredIndices
 #pragma multi_compile SORT_METAL SORT_VULKAN
 
 #ifdef SORT_METAL
@@ -75,4 +84,73 @@ void CSBitonicSort(uint3 id : SV_DispatchThreadID)
     uint tmpIdx = _SortIndices[absA];
     _SortIndices[absA] = _SortIndices[absB];
     _SortIndices[absB] = tmpIdx;
+}
+
+// ============================================================================
+// CSBuildFilteredIndices
+// ============================================================================
+// Must mirror C# SplatClusterData layout (68 bytes). Identical to the struct
+// declared in SplatCull.compute — if one is updated the other MUST follow.
+struct SplatClusterData
+{
+    int   startIndex;
+    int   count;
+    float3 boundsCenter;
+    float3 boundsExtents;
+    int   lodLevel;
+    float3 megaSplatPosition;
+    float4 megaSplatColor;
+    float  megaSplatScale;
+};
+
+StructuredBuffer<SplatClusterData> _Clusters;
+StructuredBuffer<uint>             _VisibleMask;     // one uint per cluster: 1 visible, 0 culled
+StructuredBuffer<int>              _LodLevels;       // one int per cluster: 0..3
+StructuredBuffer<int>              _AllSplatIndices; // flat index array from SplatClusterIndexAsset
+RWStructuredBuffer<uint>           _FilteredIndices; // output (bound to renderer.gpuSortKeys)
+RWStructuredBuffer<uint>           _FilteredCount;   // single-element counter (cleared to 0 each frame)
+
+uint _ClusterCount;
+uint _MaxFilteredIndices; // capacity of _FilteredIndices; guards against overrun
+
+[numthreads(64,1,1)]
+void CSBuildFilteredIndices(uint3 id : SV_DispatchThreadID)
+{
+    uint clusterIdx = id.x;
+    if (clusterIdx >= _ClusterCount)
+        return;
+    if (_VisibleMask[clusterIdx] == 0u)
+        return;
+
+    SplatClusterData cl = _Clusters[clusterIdx];
+    int lod = _LodLevels[clusterIdx];
+
+    // Derive stride and emit count. LOD3 emits exactly one representative splat.
+    uint stride;
+    uint writeCount;
+    if (lod <= 0)         { stride = 1u; writeCount = (uint)cl.count; }
+    else if (lod == 1)    { stride = 2u; writeCount = ((uint)cl.count + 1u) >> 1; }
+    else if (lod == 2)    { stride = 4u; writeCount = ((uint)cl.count + 3u) >> 2; }
+    else                  { stride = 1u; writeCount = 1u; }
+
+    if (writeCount == 0u)
+        return;
+
+    uint outOffset;
+    InterlockedAdd(_FilteredCount[0], writeCount, outOffset);
+
+    // Clamp against the capacity of _FilteredIndices to avoid out-of-bounds writes
+    // if a pathological input requests more than the buffer can hold.
+    uint end = outOffset + writeCount;
+    if (end > _MaxFilteredIndices)
+    {
+        if (outOffset >= _MaxFilteredIndices) return;
+        writeCount = _MaxFilteredIndices - outOffset;
+    }
+
+    for (uint i = 0u; i < writeCount; ++i)
+    {
+        uint srcIdx = (uint)cl.startIndex + i * stride;
+        _FilteredIndices[outOffset + i] = (uint)_AllSplatIndices[srcIdx];
+    }
 }

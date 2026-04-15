@@ -21,6 +21,7 @@ namespace GaussianLOD.Runtime.Util
         public const string kKernelFrustumCull = "CSFrustumCull";
         public const string kKernelCoverageEstimate = "CSCoverageEstimate";
         public const string kKernelBitonicSort = "CSBitonicSort";
+        public const string kKernelBuildFilteredIndices = "CSBuildFilteredIndices";
         public const string kKernelLODSelect = "CSLODSelect";
         public const string kKernelMegaSplatBlit = "CSMegaSplatBlit";
 

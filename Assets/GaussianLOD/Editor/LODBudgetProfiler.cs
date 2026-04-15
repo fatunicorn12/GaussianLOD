@@ -112,7 +112,8 @@ namespace GaussianLOD.Editor
 
             m_Budget.text = $"Splats: {requested:N0} / {budget:N0}  ({pct * 100f:F0}%)";
             m_PerLod.text = $"LOD0:{n0}  LOD1:{n1}  LOD2:{n2}  LOD3:{n3}   visible:{visibleClusters}";
-            m_Bucket.text = $"Active bucket: LOD{asm.CurrentBucket} (req LOD{asm.LastFrameSelectedLod})";
+            m_Bucket.text = $"Visible splats: {asm.LastFrameVisibleSplatCount:N0} " +
+                            $"({asm.LastFrameVisibleClusterCount} clusters)";
         }
 
         void RefreshMultiZone(SpatialZoneManager manager)
@@ -145,7 +146,8 @@ namespace GaussianLOD.Editor
                 int zCost = z.Budget.LastFrameSplatCost;
                 float zPct = zBudget <= 0 ? 0f : (float)zCost / zBudget;
                 m_ZoneFills[i] = Mathf.Clamp01(zPct);
-                m_ZoneLabels[i].text = $"Zone {i}: {zCost:N0}/{zBudget:N0} ({zPct * 100f:F0}%)  LOD{z.Assembler.CurrentBucket}";
+                m_ZoneLabels[i].text = $"Zone {i}: {zCost:N0}/{zBudget:N0} " +
+                                       $"({zPct * 100f:F0}%)  vis {z.Assembler.LastFrameVisibleSplatCount:N0}";
             }
         }
 

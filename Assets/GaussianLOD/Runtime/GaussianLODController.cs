@@ -12,6 +12,7 @@ using GaussianLOD.Runtime.LOD;
 using GaussianLOD.Runtime.Rendering;
 using GaussianLOD.Runtime.Stereo;
 using GaussianLOD.Runtime.Util;
+using GaussianSplatting.Runtime;
 using UnityEngine;
 
 namespace GaussianLOD.Runtime
@@ -119,12 +120,37 @@ namespace GaussianLOD.Runtime
                 m_Budget = new LODBudgetManager(m_Selector, splatsPerFrameOverride);
                 m_Transitions = new LODTransitionController(clusterCount);
 
-                // 6. Sorter (GPU bitonic, used over visible-cluster centers when needed).
-                m_Sorter = new GpuSplatSorter();
+                // 6. Resolve the LOD0 GaussianSplatRenderer — the single draw target now
+                //    that the per-cluster extension-API path (ARCHITECTURE.md §8) has
+                //    replaced bucket switching. LOD1/LOD2/LOD3 bucket GOs are kept in the
+                //    scene for rollback but are disabled by the assembler below.
+                GaussianSplatRenderer lod0Renderer = null;
+                if (lod0BucketGO != null)
+                    lod0Renderer = lod0BucketGO.GetComponentInChildren<GaussianSplatRenderer>(true);
+                if (lod0Renderer == null)
+                {
+                    // Accept the controller itself as the renderer host for the common case
+                    // where the user attached the controller directly to a GaussianSplatRenderer.
+                    lod0Renderer = GetComponentInChildren<GaussianSplatRenderer>(true);
+                }
+                if (lod0Renderer == null)
+                {
+                    Debug.LogWarning(
+                        "[GaussianLOD] No GaussianSplatRenderer found on the LOD0 bucket or " +
+                        "controller hierarchy. The per-cluster draw path will be disabled; " +
+                        "Aras will draw whatever renderers are in the scene at full cost.");
+                }
 
-                // 7. Bucket assembler.
+                // 7. Sorter — subscribes to GaussianSplatRenderer.BeforeSort and drives
+                //    gpuSortKeys / activeSplatCount / skipInternalSort.
+                m_Sorter = new GpuSplatSorter();
+                m_Sorter.Init(lod0Renderer, clusterAsset.indexAsset, m_Pool, m_Selector, clusterCount);
+
+                // 8. Draw-call assembler — disables legacy LOD1/2/3 bucket GOs and
+                //    maintains the CPU-side activeSplatCount fallback.
+                var unusedBuckets = new[] { lod1BucketGO, lod2BucketGO, lod3BucketGO };
                 m_Assembler = new SplatDrawCallAssembler(
-                    lod0BucketGO, lod1BucketGO, lod2BucketGO, lod3BucketGO);
+                    lod0Renderer, clusterAsset.clusters, unusedBuckets);
 
                 m_Initialized = true;
             }
@@ -166,7 +192,8 @@ namespace GaussianLOD.Runtime
             // 5. Hysteresis (3-frame stickiness).
             m_Transitions.Smooth(m_Selector.LodLevels);
 
-            // 6. Toggle the bucket renderer for the worst committed LOD.
+            // 6. Write activeSplatCount fallback (the sorter's BeforeSort will overwrite
+            //    with the readback-accurate value during rendering).
             m_Assembler.Apply(m_Selector.LodLevels, m_Selector.VisibleFlags);
         }
 

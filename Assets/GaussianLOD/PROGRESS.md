@@ -1,6 +1,30 @@
 # GaussianLOD — Progress
 
-**Status:** ✅ Complete. All 14 phases done.
+**Current Step:** Per-cluster rendering rewrite — complete. The LOD-bucket-switching architecture (ARCHITECTURE.md §2b, historical) has been replaced with per-cluster draw-set construction via the fork's new extension API on `GaussianSplatRenderer` (ARCHITECTURE.md §8).
+
+**Status:** ✅ Complete. All 15 phases done.
+
+## Phase 15 — Per-Cluster Rendering (extension-API consumer)
+
+**What changed**
+- `SplatSort.compute` gained a second kernel, `CSBuildFilteredIndices`, that per-cluster atomically emits stride-scaled splat indices into the fork's `gpuSortKeys` buffer.
+- `GpuSplatSorter` now subscribes to `GaussianSplatRenderer.BeforeSort` on `Init`. Each sort-frame it uploads visibility + LOD levels, clears a single-uint counter, dispatches the filter kernel, issues `cmd.RequestAsyncReadback` on the counter, sets `skipInternalSort = true`, and writes the previous frame's cached readback value to `activeSplatCount`. The legacy `Sort(...)` bitonic API is retained unchanged for `LODBudgetManager`.
+- `SplatDrawCallAssembler` no longer toggles GameObjects. It disables the legacy LOD1/LOD2/LOD3 bucket GameObjects once on construction and, each frame, computes the CPU-side stride-scaled visible splat total and writes it to `activeSplatCount` as a fallback. When the sorter is active its BeforeSort writes overwrite this value just before `DrawProcedural`.
+- `SplatRenderFeature` is unchanged structurally (still a `BeforeRenderingTransparents` marker pass) but its documentation now points at the event-driven sorter path for the real GPU work.
+- `GaussianLODController` resolves the LOD0 `GaussianSplatRenderer` from either `lod0BucketGO` or its own hierarchy and passes it to both the sorter and the assembler alongside the `SplatClusterIndexAsset`.
+- `LODBudgetProfiler` replaces its old `CurrentBucket` / `LastFrameSelectedLod` display with `LastFrameVisibleSplatCount` and `LastFrameVisibleClusterCount` — the new meaningful metrics under per-cluster rendering.
+
+**Architectural decisions logged**
+- **Kernel allocation**: `InterlockedAdd` on a single-uint counter. Output is cluster-grouped but not strictly back-to-front across clusters. For Gaussian LOD this is acceptable because LODBudgetManager already demotes furthest-first and within-cluster depth variance is small.
+- **Readback delay**: `activeSplatCount` uses the previous frame's count; one-frame staleness is invisible at 90 Hz VR and the −1 fallback ("draw all") is safe on frame 0.
+- **Fallback**: if the extension API is missing (null renderer or missing `SplatClusterIndexAsset`), the sorter logs a warning and remains unsubscribed; `SplatDrawCallAssembler` still sets `activeSplatCount` from CPU data, producing a nearest-N truncation via Aras's internal depth sort.
+- **Legacy bucket GOs**: disabled but not removed. Users can revert to the §2b bucket-switching behavior by re-enabling LOD1/2/3 GOs and disabling the controller.
+- **Ownership**: `GpuSplatSorter` owns `_AllSplatIndicesBuffer` and `_FilteredCountBuffer` (sized from the asset / 1 uint), not pool-managed. The pool's pre-existing `VisibleMaskBuffer` and `LodLevelBuffer` are reused for the per-frame uploads.
+
+## Known limitations
+- Per-cluster sort is cluster-grouped, not strictly depth-sorted across cluster boundaries. If alpha artifacts emerge at LOD transitions, a second-pass bitonic sort over the filtered range is possible (uses the retained `CSBitonicSort` kernel).
+- `activeSplatCount` is one frame behind the actual cluster/LOD distribution. Acceptable at VR frame rates.
+- `skipInternalSort` is set each frame by the sorter; if the sorter is ever disabled mid-play, the consumer is responsible for re-clearing it. `GpuSplatSorter.Dispose` does this.
 
 ## Error Triage (post-readonly-fix compile pass)
 

@@ -350,3 +350,135 @@ SpatialZoneManager
     └── GaussianLODController[] ──► (same per-zone graph as §4)
             └── StereoCameraRig.Instance (shared)
 ```
+
+---
+
+## 8. Per-Cluster Rendering (extension-API integration — CURRENT design)
+
+This section supersedes the LOD-bucketed sub-asset approach described in §2b. §2b is retained as historical record because the Aras fork in this repo now exposes a public extension API that unlocks the per-cluster draw path that was previously unreachable. **All new work targets this section.**
+
+### 8.1 Why the bucket approach is gone
+
+§2b picked "LOD-bucketed sub-asset" (render-time GameObject toggle over 4 pre-baked decimated `GaussianSplatAsset`s) because:
+
+- `GaussianSplatRenderSystem` was `internal`.
+- `m_GpuSortKeys`, `m_GpuView`, `m_GpuChunks` were `internal`/`private`.
+- `DrawProcedural`'s `instanceCount` was hard-coded to `gs.splatCount`.
+- No event hooks existed to inject work mid-draw.
+
+Cost of that workaround: ~1.94× asset memory, scene-wide-per-zone LOD granularity (all visible clusters collapse to the coarsest demanded level), no per-cluster contribution to the draw set.
+
+### 8.2 Fork's extension API (consumed by GaussianLOD)
+
+The fork at this repo root adds, on `GaussianSplatting.Runtime.GaussianSplatRenderer`:
+
+| Member | Kind | Semantic |
+|---|---|---|
+| `gpuSortKeys` | `GraphicsBuffer` property | per-splat order buffer; contents after draw sort = back-to-front splat indices |
+| `gpuView` | `GraphicsBuffer` property | per-splat projected view data (40 bytes) written by CalcViewData each frame |
+| `gpuChunks` | `GraphicsBuffer` property | per-256 splats chunk bounds for dequant (dummy 1-element buffer when not chunked) |
+| `gpuChunksValid` | `bool` property | true iff `gpuChunks` contains real chunk data |
+| `skipInternalSort` | `bool` field | when true, SortPoints fires events but does NOT run CalcDistances + radix sort. Consumer owns `gpuSortKeys` contents. **Not auto-cleared.** |
+| `activeSplatCount` | `int` field | `DrawProcedural` `instanceCount` override. **Auto-resets to −1 each frame** (the value −1 means "draw all splats"). `0` skips the draw entirely. |
+| `BeforeSort` | `Action<CommandBuffer, Camera>` | fires at top of `SortPoints()` before CalcDistances. Only fires on sort-frames. |
+| `AfterSort` | `Action<CommandBuffer, Camera>` | fires at end of `SortPoints()` after the sort (or immediately after `BeforeSort` when `skipInternalSort` is true). `gpuSortKeys` is final at this point. |
+| `AfterViewData` | `Action<CommandBuffer, Camera>` | fires at end of `CalcViewData()` after the kernel has written `gpuView`. |
+
+`HasValidRenderSetup` (already public) is the single canonical null-guard for all three buffers.
+
+### 8.3 New render flow
+
+```
+URP frame (each camera):
+  AttachedRF: SplatRenderFeature (marker pass, BeforeRenderingTransparents)
+              ordered ABOVE GaussianSplatURPFeature in the renderer asset
+  ──►
+  GaussianSplatURPFeature ──► GSRenderPass
+      SortAndRenderSplats(cam, cmd):
+        SortPoints(cmd, cam, matrix):
+          ① GpuSplatSorter.OnBeforeSort(cmd, cam)         ◄── our work
+               upload NativeArray<byte> visibleFlags as uint[]  → pool.VisibleMaskBuffer
+               upload NativeArray<int>  lodLevels         → pool.LodLevelBuffer
+               cmd.SetBufferData(filteredCount, 0)
+               cmd.DispatchCompute(SplatSort, CSBuildFilteredIndices, ceil(clusterCount/64))
+                 kernel writes cluster-by-cluster into gs.gpuSortKeys[0..] with InterlockedAdd
+               cmd.RequestAsyncReadback(filteredCount, callback)
+                 callback caches the value for use NEXT frame as activeSplatCount
+               renderer.skipInternalSort = true
+               renderer.activeSplatCount = m_CachedFilteredCount (−1 on first frame)
+          ② [skipInternalSort ⇒ CalcDistances + radix sort are NOT executed]
+          ③ AfterSort event (unused today; reserved for debug hooks)
+        CalcViewData(cmd, cam):
+          ④ kernel reads gs.gpuSortKeys[0..splatCount) as _OrderBuffer;
+             only first activeSplatCount entries are consumed downstream
+          ⑤ AfterViewData event (unused today; reserved for LOD fade in PatternA)
+        DrawProcedural(..., instanceCount = activeSplatCount)
+          ⑥ activeSplatCount auto-resets to −1
+```
+
+### 8.4 How the extension API maps to each system
+
+| GaussianLOD system | Hook point | Role under new architecture |
+|---|---|---|
+| `FrustumCuller` / `ScreenCoverageEstimator` (GPU) | unchanged compute dispatches | Optional GPU path — still available but not on the hot path. CPU `LODSelector` remains the default because it's < 1ms and has no readback latency. |
+| `LODSelector` (CPU) | `LateUpdate` | Unchanged. Produces `VisibleFlags[]`, `LodLevels[]`, `Coverage[]` as before. |
+| `LODBudgetManager` | `LateUpdate` | Unchanged. Demotes clusters furthest-first to fit per-frame splat budget. |
+| `LODTransitionController` | `LateUpdate` | Unchanged. 3-frame hysteresis on per-cluster LOD. |
+| **`GpuSplatSorter`** | subscribes to `GaussianSplatRenderer.BeforeSort` | **Core of new path.** Uploads visibility+LOD to GPU, dispatches `CSBuildFilteredIndices` to write filtered splat indices into `gpuSortKeys`, sets `skipInternalSort`, sets `activeSplatCount` from a cached AsyncGPUReadback result. |
+| **`SplatDrawCallAssembler`** | `LateUpdate` (fallback) | Dramatically simplified. Holds the LOD0 `GaussianSplatRenderer` reference. Only used to expose the "current visible splat count" for profiling tools. No more GameObject toggling. |
+| `SplatRenderFeature` | URP renderer asset | Still ordered above `GaussianSplatURPFeature`. Now purely a marker pass — the real work lives on the `BeforeSort` event, not in any URP pass body. |
+| `GaussianLODController` | `Awake` | Finds the LOD0 `GaussianSplatRenderer`, passes it to sorter + assembler, disables LOD1/2/3 bucket GOs (they are now unused by the runtime; kept in scene for rollback). |
+
+### 8.5 The filtered-index kernel — `CSBuildFilteredIndices`
+
+Lives in `SplatSort.compute` (same shader that hosts `CSBitonicSort`).
+
+Inputs:
+```
+StructuredBuffer<SplatClusterData> _Clusters;      // pool.ClusterMetadataBuffer (uploaded once)
+StructuredBuffer<uint>             _VisibleMask;   // pool.VisibleMaskBuffer (per-frame uint upload)
+StructuredBuffer<int>              _LodLevels;     // pool.LodLevelBuffer   (per-frame int upload)
+StructuredBuffer<int>              _AllSplatIndices; // uploaded once from SplatClusterIndexAsset
+RWStructuredBuffer<uint>           _FilteredIndices; // bound to renderer.gpuSortKeys
+RWStructuredBuffer<uint>           _FilteredCount;   // single-uint scratch
+uint _ClusterCount;
+```
+
+Each thread maps to one cluster. If visible, emits splat indices into `_FilteredIndices` using a stride derived from the cluster's LOD:
+
+| LOD | Stride | Emitted count |
+|-----|-------|---------------|
+| 0 (Full) | 1 | `count` |
+| 1 (Half) | 2 | `(count + 1) / 2` |
+| 2 (Quarter) | 4 | `(count + 3) / 4` |
+| 3 (Mega) | — | `1` (the cluster's first splat index as the representative) |
+
+Allocation uses `InterlockedAdd(_FilteredCount[0], writeCount, offset)` — the output is cluster-grouped but not strictly back-to-front across clusters. In practice this is acceptable because (a) within a cluster splats are spatially close so intra-cluster depth variance is small, and (b) the existing `LODBudgetManager` already demotes furthest-first, biasing mega-only clusters to the back of the scene.
+
+### 8.6 AsyncGPUReadback for `activeSplatCount`
+
+`_FilteredCount[0]` is read back via `cmd.RequestAsyncReadback` inside `OnBeforeSort`. The callback caches the value into `m_CachedFilteredCount`. Each subsequent `OnBeforeSort` sets `renderer.activeSplatCount = m_CachedFilteredCount` — so we are always using the previous frame's count. The 1-frame delay is acceptable:
+
+- On the first frame (no cached readback yet), `m_CachedFilteredCount` stays at `-1`, which tells Aras to draw all splats. Safe, just expensive.
+- On subsequent frames the cached value matches the cluster/LOD distribution of 1 frame ago. At 90 Hz VR this is ~11 ms of staleness — well below any perceivable lag.
+
+### 8.7 What the old bucket switching did vs what the new path does
+
+| Concern | Old (§2b, bucket switching) | New (§8, per-cluster) |
+|---|---|---|
+| Asset memory | ~1.94× source (LOD0/1/2/3 stored) | 1.0× source (single asset; LOD1/2/3 unused, kept for rollback) |
+| LOD granularity | Scene-wide per zone (max committed) | Per-cluster (LOD0 clusters and LOD3 clusters coexist in the same frame) |
+| Draw count | Always = bucket's splatCount | Exactly `sum(per-visible-cluster, stride-scaled count)` |
+| Sort order | Aras sorts all splats (including off-screen) | Only visible/filtered splats appear in `gpuSortKeys`; cluster-grouped order |
+| Culling effect on GPU | None — culled clusters still in VRAM at full cost | Invisible clusters do not appear in `gpuSortKeys`, so they do not enter `CalcViewData` or `DrawProcedural` |
+| Per-frame CPU writes | 4 `SetActive` calls | Two `SetBufferData` (visible+lod, 16 KB each), one dispatch, one readback |
+| Rollback path | N/A | Set `renderer.skipInternalSort = false` and `renderer.activeSplatCount = -1` to revert to Aras's original draw-everything behavior. |
+
+### 8.8 Files touched by the rewrite
+
+- `Runtime/Rendering/GpuSplatSorter.cs` — full rewrite (bitonic kernel kept as fallback, but primary path is `CSBuildFilteredIndices` + extension API subscription).
+- `Runtime/Rendering/SplatDrawCallAssembler.cs` — collapse bucket switcher to a thin `activeSplatCount` fallback + disable LOD1/2/3 GOs on init.
+- `Runtime/Rendering/SplatRenderFeature.cs` — no body change; retain as marker pass (all real work is event-driven now).
+- `Runtime/GaussianLODController.cs` — wire sorter to LOD0 `GaussianSplatRenderer` + index asset; disable LOD1/2/3 bucket GOs on Awake.
+- `Shaders/Resources/GaussianLOD/SplatSort.compute` — add `CSBuildFilteredIndices` kernel alongside existing `CSBitonicSort`.
+- `Runtime/Util/NativeBufferPool.cs` — no structural change; add helper accessors for the two new per-sorter scratch buffers (`AllSplatIndicesBuffer`, `FilteredCountBuffer`) constructed by the sorter itself (not pooled — they're sized by the asset, not the cluster capacity).

@@ -1,6 +1,6 @@
 # GaussianLOD — Task List
 
-All phases complete.
+All 15 phases complete. Phase 15 consumes the fork's new `GaussianSplatRenderer` extension API for per-cluster draw-set construction (ARCHITECTURE.md §8).
 
 ## Phase 0 — Discovery
 - [x] Explore Aras package
@@ -85,3 +85,17 @@ All phases complete.
 ## Phase 14 — Python PLY Spatial Splitter
 - [x] `Tools/split_ply.py`
 - [x] `Tools/requirements.txt`
+
+## Phase 15 — Per-Cluster Rendering (fork extension API)
+Drive Aras's draw path directly instead of toggling LOD-bucket GameObjects. See ARCHITECTURE.md §8.
+- [x] Update ARCHITECTURE.md §8 (Per-Cluster Rendering)
+- [x] Update TASKS.md (this list) with phase 15 work
+- [x] Update PROGRESS.md — Current Step = Per-cluster rendering rewrite
+- [x] Add `CSBuildFilteredIndices` kernel to `Shaders/Resources/GaussianLOD/SplatSort.compute`
+- [x] Rewrite `Runtime/Rendering/GpuSplatSorter.cs` (BeforeSort subscription, filter dispatch, readback, skipInternalSort, activeSplatCount)
+- [x] Rewrite `Runtime/Rendering/SplatDrawCallAssembler.cs` (drop bucket toggles; thin activeSplatCount wrapper; disable LOD1/2/3 GOs on init)
+- [x] Update `Runtime/Rendering/SplatRenderFeature.cs` (marker-only; event-driven work now lives on sorter)
+- [x] Update `Runtime/GaussianLODController.cs` (find LOD0 renderer, pass to sorter+assembler, disable unused bucket GOs)
+- [x] Update `Editor/LODBudgetProfiler.cs` — swap removed `CurrentBucket`/`LastFrameSelectedLod` for `LastFrameVisibleSplatCount`
+- [x] Add `kKernelBuildFilteredIndices` constant to `Runtime/Util/ComputeShaderCache.cs`
+- [x] Final TASKS.md / PROGRESS.md sweep
